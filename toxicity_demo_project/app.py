@@ -1,46 +1,35 @@
 from flask import Flask, render_template, request, jsonify
 import os
-import joblib
-from transformers import BertTokenizer, BertForSequenceClassification
+import re
+from urllib.parse import urlparse, parse_qs
+
+import requests
 import torch
+from transformers import BertTokenizer, BertForSequenceClassification
 
 app = Flask(__name__)
 
-
-
-
 MODEL_PATH = "./toxic_bert_model"
+YOUTUBE_API_KEY = "AIzaSyCkKXroQMhWWAdR_b7aFIIwUhdZEJnSvGg"
+
+LABELS = [
+    "toxic",
+    "severe_toxic",
+    "obscene",
+    "threat",
+    "insult",
+    "identity_hate"
+]
+
 
 class ToxicModel:
-    """
-    Simple fallback so the demo still runs even if model.pkl doesn't exist yet.
-    Replace with your real trained model from Google Colab.
-    """
-    toxic_words = {
-        "idiot", "stupid", "hate", "trash", "moron", "loser",
-        "ugly", "kill", "dumb", "garbage", "shut up"
-    }
-
-    labels = [
-        "toxic",
-        "severe_toxic",
-        "obscene",
-        "threat",
-        "insult",
-        "identity_hate"
-    ]
-
-    MODEL_PATH = "./toxic_bert_model"
-    def  __init__(self):
-        self.tokenizer = BertTokenizer.from_pretrained(self.MODEL_PATH)
-        self.model = BertForSequenceClassification.from_pretrained(self.MODEL_PATH)
-
+    def __init__(self, model_path=MODEL_PATH):
+        self.labels = LABELS
+        self.tokenizer = BertTokenizer.from_pretrained(model_path)
+        self.model = BertForSequenceClassification.from_pretrained(model_path)
         self.model.eval()
-    
 
-    
-
-    def detect_toxicity(self,text, threshold=0.5):
+    def score_text(self, text):
         inputs = self.tokenizer(
             text,
             return_tensors="pt",
@@ -48,70 +37,176 @@ class ToxicModel:
             padding=True,
             max_length=256
         )
-
         with torch.no_grad():
             outputs = self.model(**inputs)
-            probs = torch.sigmoid(outputs.logits)[0]
+            probs = torch.sigmoid(outputs.logits)[0].tolist()
 
-        results = {
-            label: float(prob)
+        scores = {
+            label: round(float(prob) * 100, 2)
             for label, prob in zip(self.labels, probs)
         }
+        return scores
 
-        predicted = [
-            label
-            for label, prob in results.items()
-            if prob >= threshold
-        ]
+    def predict_scores(self, texts):
+        return [self.score_text(text) for text in texts]
 
-        return predicted, results
 
-    def predict(self, texts):
-        results_bla = []
-        if isinstance(texts, list):
-            for text in texts:
-                predicted, bla = self.detect_toxicity(text)
-                results_bla.append(" ".join(predicted) if predicted else "")
-            return results_bla
-        else:
-
-            predicted, results = self.detect_toxicity(texts)
-        
-        return predicted
-    
 class FallbackToxicModel:
-    """
-    Simple fallback so the demo still runs even if model.pkl doesn't exist yet.
-    Replace with your real trained model from Google Colab.
-    """
-    toxic_words = {
-        "idiot", "stupid", "hate", "trash", "moron", "loser",
-        "ugly", "kill", "dumb", "garbage", "shut up"
-    }
+    def __init__(self):
+        self.labels = LABELS
+        self.rules = {
+            "toxic": {"idiot", "stupid", "hate", "trash", "moron", "loser", "dumb", "garbage"},
+            "severe_toxic": {"kill yourself", "die", "worthless", "go die"},
+            "obscene": {"damn", "shit", "fuck", "bitch", "asshole"},
+            "threat": {"kill", "hurt", "destroy", "attack", "beat you"},
+            "insult": {"ugly", "clown", "pathetic", "loser", "idiot"},
+            "identity_hate": {"racist", "nazi", "terrorist", "slur_placeholder"},
+        }
 
-    def predict(self, texts):
-        results = []
-        for text in texts:
-            lowered = text.lower()
-            is_toxic = 1 if any(word in lowered for word in self.toxic_words) else 0
-            results.append(is_toxic)
-        return results
+    def score_text(self, text):
+        lowered = text.lower()
+        scores = {}
+        for label in self.labels:
+            matches = sum(1 for token in self.rules[label] if token in lowered)
+            if matches == 0:
+                score = 3.0 if len(lowered) > 10 else 0.5
+            elif matches == 1:
+                score = 72.0
+            else:
+                score = 93.0
+            scores[label] = round(score, 2)
+        return scores
+
+    def predict_scores(self, texts):
+        return [self.score_text(text) for text in texts]
+
+
 def load_model():
     if os.path.exists(MODEL_PATH):
-        # try:
-            return ToxicModel()
-        # except Exception as e:
-            print(f"Could not load model.pkl, using fallback model instead: {e}")
+        try:
+            return ToxicModel(MODEL_PATH)
+        except Exception as e:
+            print(f"Could not load transformer model from {MODEL_PATH}. Falling back. Error: {e}")
     else:
-        print("model.pkl not found, using fallback model.")
+        print(f"{MODEL_PATH} not found. Using fallback model.")
     return FallbackToxicModel()
-    
+
 
 model = load_model()
 
+
+def summarize_scores(scores, threshold=50.0):
+    active_labels = [label for label, value in scores.items() if value >= threshold]
+    overall_toxic = any(value >= threshold for value in scores.values())
+    return {
+        "overallToxic": overall_toxic,
+        "activeLabels": active_labels,
+        "scores": scores
+    }
+
+
+def aggregate_label_percentages(per_comment_scores, threshold=50.0):
+    total = len(per_comment_scores)
+    if total == 0:
+        return {label: 0.0 for label in LABELS}
+
+    summary = {}
+    for label in LABELS:
+        count = sum(1 for scores in per_comment_scores if scores[label] >= threshold)
+        summary[label] = round((count / total) * 100, 2)
+    return summary
+
+
+def extract_video_id(url_or_id):
+    value = (url_or_id or "").strip()
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
+        return value
+
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return None
+
+    host = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+
+    if "youtube.com" in host:
+        if path == "/watch":
+            return parse_qs(parsed.query).get("v", [None])[0]
+        if path.startswith("/shorts/"):
+            parts = path.split("/")
+            return parts[2] if len(parts) > 2 else None
+        if path.startswith("/embed/"):
+            parts = path.split("/")
+            return parts[2] if len(parts) > 2 else None
+
+    if "youtu.be" in host:
+        parts = path.strip("/").split("/")
+        return parts[0] if parts and parts[0] else None
+
+    return None
+
+
+def get_youtube_comments(video_url, max_comments=100):
+    if not YOUTUBE_API_KEY:
+        raise ValueError("Missing YOUTUBE_API_KEY environment variable.")
+
+    video_id = extract_video_id(video_url)
+    if not video_id:
+        raise ValueError("Could not extract a valid YouTube video ID from the URL.")
+
+    comments = []
+    next_page_token = None
+
+    while len(comments) < max_comments:
+        batch_size = min(100, max_comments - len(comments))
+        params = {
+            "part": "snippet",
+            "videoId": video_id,
+            "maxResults": batch_size,
+            "textFormat": "plainText",
+            "key": YOUTUBE_API_KEY
+        }
+        if next_page_token:
+            params["pageToken"] = next_page_token
+
+        response = requests.get(
+            "https://www.googleapis.com/youtube/v3/commentThreads",
+            params=params,
+            timeout=25
+        )
+
+        try:
+            data = response.json()
+        except Exception:
+            data = {"error": {"message": response.text}}
+
+        if response.status_code != 200:
+            message = data.get("error", {}).get("message", "YouTube API request failed.")
+            raise ValueError(message)
+
+        for item in data.get("items", []):
+            snippet = item.get("snippet", {})
+            top_comment = snippet.get("topLevelComment", {})
+            comment_snippet = top_comment.get("snippet", {})
+            text = (comment_snippet.get("textDisplay") or "").strip()
+            if text:
+                comments.append(text)
+            if len(comments) >= max_comments:
+                break
+
+        next_page_token = data.get("nextPageToken")
+        if not next_page_token:
+            break
+
+    return video_id, comments
+
+
 @app.route("/")
 def home():
-    return render_template("index.html")
+    return render_template("index.html", labels=LABELS)
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -121,13 +216,17 @@ def predict():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    prediction = " ".join(model.predict(text))
+    scores = model.predict_scores([text])[0]
+    summary = summarize_scores(scores)
+
     return jsonify({
         "mode": "single",
         "inputText": text,
-        "prediction": prediction,
-        "label": str(prediction) if prediction else "Not Toxic"
+        "labelScores": scores,
+        "activeLabels": summary["activeLabels"],
+        "overallToxic": summary["overallToxic"]
     })
+
 
 @app.route("/analyze-comments", methods=["POST"])
 def analyze_comments():
@@ -141,39 +240,81 @@ def analyze_comments():
     if not cleaned_comments:
         return jsonify({"error": "No valid comments after cleaning"}), 400
 
-    predictions = model.predict(cleaned_comments)
+    per_comment_scores = model.predict_scores(cleaned_comments)
+    label_percentages = aggregate_label_percentages(per_comment_scores, threshold=50.0)
+    overall_toxic_percent = round(
+        sum(1 for scores in per_comment_scores if any(v >= 50.0 for v in scores.values())) / len(per_comment_scores) * 100,
+        2
+    )
 
     results = []
-    toxic_count = 0
-
-    for comment, pred in zip(cleaned_comments, predictions):
-        pred = len(pred) > 0
-        if pred == 1:
-            toxic_count += 1
+    for comment, scores in zip(cleaned_comments, per_comment_scores):
+        summary = summarize_scores(scores)
         results.append({
             "comment": comment,
-            "prediction": pred,
-            "label": "Toxic" if pred == 1 else "Not Toxic"
+            "overallToxic": summary["overallToxic"],
+            "activeLabels": summary["activeLabels"],
+            "labelScores": scores
         })
-
-    total = len(cleaned_comments)
-    toxicity_percent = round((toxic_count / total) * 100, 2)
-
-    if toxicity_percent < 20:
-        recommendation = "Looks relatively safe"
-    elif toxicity_percent < 40:
-        recommendation = "Use caution"
-    else:
-        recommendation = "High toxicity risk"
 
     return jsonify({
         "mode": "batch",
-        "totalComments": total,
-        "toxicComments": toxic_count,
-        "toxicityPercent": toxicity_percent,
-        "recommendation": recommendation,
+        "source": "manual_comments",
+        "totalComments": len(cleaned_comments),
+        "overallToxicPercent": overall_toxic_percent,
+        "labelPercentages": label_percentages,
         "results": results
     })
+
+
+@app.route("/analyze-youtube", methods=["POST"])
+def analyze_youtube():
+    data = request.get_json(force=True)
+    video_url = (data.get("videoUrl") or "").strip()
+    max_comments = int(data.get("maxComments", 500))
+
+    if not video_url:
+        return jsonify({"error": "videoUrl is required"}), 400
+
+    if max_comments < 1 or max_comments > 500:
+        return jsonify({"error": "maxComments must be between 1 and 500"}), 400
+
+    try:
+        video_id, comments = get_youtube_comments(video_url, max_comments=max_comments)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except requests.RequestException:
+        return jsonify({"error": "Could not connect to the YouTube API."}), 502
+
+    if not comments:
+        return jsonify({"error": "No comments were retrieved for this video."}), 404
+
+    per_comment_scores = model.predict_scores(comments)
+    label_percentages = aggregate_label_percentages(per_comment_scores, threshold=50.0)
+    overall_toxic_percent = round(
+        sum(1 for scores in per_comment_scores if any(v >= 50.0 for v in scores.values())) / len(per_comment_scores) * 100,
+        2
+    )
+
+    sample_results = []
+    for comment, scores in list(zip(comments, per_comment_scores))[:-1]:
+        summary = summarize_scores(scores)
+        sample_results.append({
+            "comment": comment,
+            "overallToxic": summary["overallToxic"],
+            "activeLabels": summary["activeLabels"],
+            "labelScores": scores
+        })
+
+    return jsonify({
+        "mode": "youtube",
+        "videoId": video_id,
+        "totalComments": len(comments),
+        "overallToxicPercent": overall_toxic_percent,
+        "labelPercentages": label_percentages,
+        "results": sample_results
+    })
+
 
 if __name__ == "__main__":
     app.run(debug=True)

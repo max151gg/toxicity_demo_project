@@ -17,7 +17,7 @@ body {
 }
 
 .card {
-    width: min(1100px, 100%);
+    width: min(900px, 100%);
     background: #111827;
     border: 1px solid #1f2937;
     border-radius: 18px;
@@ -40,7 +40,6 @@ h1 {
     display: flex;
     gap: 10px;
     margin-bottom: 20px;
-    flex-wrap: wrap;
 }
 
 .tab {
@@ -71,14 +70,9 @@ label {
     font-weight: bold;
 }
 
-.top-gap {
-    margin-top: 14px;
-}
-
-textarea,
-.text-input {
+textarea {
     width: 100%;
-    min-height: 48px;
+    min-height: 150px;
     background: #0b1220;
     color: white;
     border: 1px solid #334155;
@@ -86,14 +80,6 @@ textarea,
     padding: 14px;
     resize: vertical;
     margin-bottom: 14px;
-}
-
-textarea {
-    min-height: 150px;
-}
-
-.text-input.small {
-    max-width: 220px;
 }
 
 .action-btn {
@@ -105,6 +91,10 @@ textarea {
     cursor: pointer;
     font-size: 15px;
     font-weight: bold;
+}
+
+.action-btn:hover {
+    opacity: 0.95;
 }
 
 .result-box {
@@ -120,42 +110,24 @@ textarea {
     display: none;
 }
 
-.summary-grid,
-.labels-grid {
+.summary-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 12px;
     margin-top: 10px;
 }
 
-.metric,
-.label-card {
+.metric {
     background: #111827;
     border: 1px solid #334155;
     border-radius: 12px;
     padding: 12px;
 }
 
-.metric strong,
-.label-card strong {
+.metric strong {
     display: block;
     font-size: 22px;
     margin-top: 6px;
-}
-
-.progress {
-    width: 100%;
-    height: 10px;
-    background: #1f2937;
-    border-radius: 999px;
-    overflow: hidden;
-    margin-top: 10px;
-}
-
-.progress > span {
-    display: block;
-    height: 100%;
-    background: linear-gradient(90deg, #2563eb, #ef4444);
 }
 
 table {
@@ -179,7 +151,6 @@ th, td {
     border-radius: 999px;
     font-weight: bold;
     display: inline-block;
-    margin: 2px 4px 2px 0;
 }
 
 .badge.safe {
@@ -190,13 +161,4 @@ th, td {
 .badge.toxic {
     background: rgba(239, 68, 68, 0.18);
     color: #f87171;
-}
-
-.badge.neutral {
-    background: rgba(59, 130, 246, 0.16);
-    color: #93c5fd;
-}
-
-.muted {
-    color: #94a3b8;
 }

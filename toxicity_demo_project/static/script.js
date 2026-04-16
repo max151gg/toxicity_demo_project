@@ -1,20 +1,24 @@
 const tabs = document.querySelectorAll(".tab");
-const singlePanel = document.getElementById("single-panel");
-const batchPanel = document.getElementById("batch-panel");
+const panels = {
+    single: document.getElementById("single-panel"),
+    batch: document.getElementById("batch-panel"),
+    youtube: document.getElementById("youtube-panel")
+};
 
 tabs.forEach(tab => {
     tab.addEventListener("click", () => {
         tabs.forEach(t => t.classList.remove("active"));
         tab.classList.add("active");
-
         const chosen = tab.dataset.tab;
-        singlePanel.classList.toggle("active", chosen === "single");
-        batchPanel.classList.toggle("active", chosen === "batch");
+        Object.entries(panels).forEach(([key, panel]) => {
+            panel.classList.toggle("active", key === chosen);
+        });
     });
 });
 
 document.getElementById("singleBtn").addEventListener("click", analyzeSingle);
 document.getElementById("batchBtn").addEventListener("click", analyzeBatch);
+document.getElementById("youtubeBtn").addEventListener("click", analyzeYoutube);
 
 async function analyzeSingle() {
     const text = document.getElementById("singleText").value.trim();
@@ -37,18 +41,21 @@ async function analyzeSingle() {
         });
 
         const data = await response.json();
-
         if (!response.ok) {
-            resultBox.innerHTML = data.error || "Something went wrong.";
+            resultBox.innerHTML = escapeHtml(data.error || "Something went wrong.");
             return;
         }
 
-        const badgeClass = data.prediction === 1 ? "toxic" : "safe";
-
         resultBox.innerHTML = `
             <div><strong>Input:</strong> ${escapeHtml(data.inputText)}</div>
-            <div style="margin-top:10px;">
-                <span class="badge ${badgeClass}">${data.label}</span>
+            <div class="top-gap">
+                ${data.overallToxic
+                    ? '<span class="badge toxic">Overall: Toxic</span>'
+                    : '<span class="badge safe">Overall: Not Toxic</span>'}
+            </div>
+            <div class="top-gap"><strong>Triggered labels:</strong> ${renderTriggeredLabels(data.activeLabels)}</div>
+            <div class="labels-grid top-gap">
+                ${renderLabelCards(data.labelScores)}
             </div>
         `;
     } catch (error) {
@@ -58,10 +65,7 @@ async function analyzeSingle() {
 
 async function analyzeBatch() {
     const raw = document.getElementById("batchComments").value;
-    const comments = raw
-        .split("\n")
-        .map(x => x.trim())
-        .filter(Boolean);
+    const comments = raw.split("\n").map(x => x.trim()).filter(Boolean);
 
     const summary = document.getElementById("batchSummary");
     const tableWrap = document.getElementById("batchTableWrap");
@@ -87,9 +91,8 @@ async function analyzeBatch() {
         });
 
         const data = await response.json();
-
         if (!response.ok) {
-            summary.innerHTML = data.error || "Something went wrong.";
+            summary.innerHTML = escapeHtml(data.error || "Something went wrong.");
             return;
         }
 
@@ -97,19 +100,19 @@ async function analyzeBatch() {
             <h3>Summary</h3>
             <div class="summary-grid">
                 <div class="metric">Total Comments<strong>${data.totalComments}</strong></div>
-                <div class="metric">Toxic Comments<strong>${data.toxicComments}</strong></div>
-                <div class="metric">Toxicity Percent<strong>${data.toxicityPercent}%</strong></div>
-                <div class="metric">Recommendation<strong>${escapeHtml(data.recommendation)}</strong></div>
+                <div class="metric">Overall Toxic %<strong>${data.overallToxicPercent}%</strong></div>
+            </div>
+            <div class="labels-grid top-gap">
+                ${renderLabelCards(data.labelPercentages, true)}
             </div>
         `;
 
         data.results.forEach((item, index) => {
             const tr = document.createElement("tr");
-            const badgeClass = item.prediction === 1 ? "toxic" : "safe";
             tr.innerHTML = `
                 <td>${index + 1}</td>
                 <td>${escapeHtml(item.comment)}</td>
-                <td><span class="badge ${badgeClass}">${item.label}</span></td>
+                <td>${renderTriggeredLabels(item.activeLabels)}</td>
             `;
             tableBody.appendChild(tr);
         });
@@ -120,8 +123,94 @@ async function analyzeBatch() {
     }
 }
 
+async function analyzeYoutube() {
+    const videoUrl = document.getElementById("youtubeUrl").value.trim();
+    const maxComments = parseInt(document.getElementById("youtubeMaxComments").value, 10) || 100;
+
+    const summary = document.getElementById("youtubeSummary");
+    const labelsWrap = document.getElementById("youtubeLabels");
+    const tableWrap = document.getElementById("youtubeTableWrap");
+    const tableBody = document.getElementById("youtubeTableBody");
+
+    if (!videoUrl) {
+        summary.classList.remove("hidden");
+        summary.innerHTML = "Please enter a YouTube video URL.";
+        labelsWrap.classList.add("hidden");
+        tableWrap.classList.add("hidden");
+        return;
+    }
+
+    summary.classList.remove("hidden");
+    summary.innerHTML = "Fetching YouTube comments and analyzing them...";
+    labelsWrap.classList.add("hidden");
+    tableWrap.classList.add("hidden");
+    tableBody.innerHTML = "";
+
+    try {
+        const response = await fetch("/analyze-youtube", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ videoUrl, maxComments })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            summary.innerHTML = escapeHtml(data.error || "Something went wrong.");
+            return;
+        }
+
+        summary.innerHTML = `
+            <h3>YouTube Scan Summary</h3>
+            <div class="summary-grid">
+                <div class="metric">Video ID<strong>${escapeHtml(data.videoId)}</strong></div>
+                <div class="metric">Comments Scanned<strong>${data.totalComments}</strong></div>
+                <div class="metric">Overall Toxic %<strong>${data.overallToxicPercent}%</strong></div>
+            </div>
+        `;
+
+        labelsWrap.innerHTML = renderLabelCards(data.labelPercentages, true);
+        labelsWrap.classList.remove("hidden");
+
+        data.results.forEach((item, index) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${escapeHtml(item.comment)}</td>
+                <td>${renderTriggeredLabels(item.activeLabels)}</td>
+            `;
+            tableBody.appendChild(tr);
+        });
+
+        tableWrap.classList.remove("hidden");
+    } catch (error) {
+        summary.innerHTML = "Could not connect to backend.";
+    }
+}
+
+function renderTriggeredLabels(labels) {
+    if (!labels || labels.length === 0) {
+        return '<span class="badge safe">None</span>';
+    }
+    return labels.map(label => `<span class="badge toxic">${escapeHtml(label)}</span>`).join("");
+}
+
+function renderLabelCards(labelMap, asPercentSummary = false) {
+    const labels = window.ALL_LABELS || Object.keys(labelMap);
+    return labels.map(label => {
+        const value = Number(labelMap[label] ?? 0).toFixed(2);
+        const title = escapeHtml(label);
+        return `
+            <div class="label-card">
+                <div class="muted">${title}</div>
+                <strong>${value}%</strong>
+                <div class="progress"><span style="width:${Math.max(0, Math.min(100, value))}%"></span></div>
+            </div>
+        `;
+    }).join("");
+}
+
 function escapeHtml(text) {
-    return text
+    return String(text)
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
