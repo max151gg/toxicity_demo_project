@@ -1,11 +1,84 @@
 from flask import Flask, render_template, request, jsonify
 import os
 import joblib
+from transformers import BertTokenizer, BertForSequenceClassification
+import torch
 
 app = Flask(__name__)
 
-MODEL_PATH = "model.pkl"
 
+
+
+MODEL_PATH = "./toxic_bert_model"
+
+class ToxicModel:
+    """
+    Simple fallback so the demo still runs even if model.pkl doesn't exist yet.
+    Replace with your real trained model from Google Colab.
+    """
+    toxic_words = {
+        "idiot", "stupid", "hate", "trash", "moron", "loser",
+        "ugly", "kill", "dumb", "garbage", "shut up"
+    }
+
+    labels = [
+        "toxic",
+        "severe_toxic",
+        "obscene",
+        "threat",
+        "insult",
+        "identity_hate"
+    ]
+
+    MODEL_PATH = "./toxic_bert_model"
+    def  __init__(self):
+        self.tokenizer = BertTokenizer.from_pretrained(self.MODEL_PATH)
+        self.model = BertForSequenceClassification.from_pretrained(self.MODEL_PATH)
+
+        self.model.eval()
+    
+
+    
+
+    def detect_toxicity(self,text, threshold=0.5):
+        inputs = self.tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            padding=True,
+            max_length=256
+        )
+
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            probs = torch.sigmoid(outputs.logits)[0]
+
+        results = {
+            label: float(prob)
+            for label, prob in zip(self.labels, probs)
+        }
+
+        predicted = [
+            label
+            for label, prob in results.items()
+            if prob >= threshold
+        ]
+
+        return predicted, results
+
+    def predict(self, texts):
+        results_bla = []
+        if isinstance(texts, list):
+            for text in texts:
+                predicted, bla = self.detect_toxicity(text)
+                results_bla.append(" ".join(predicted) if predicted else "")
+            return results_bla
+        else:
+
+            predicted, results = self.detect_toxicity(texts)
+        
+        return predicted
+    
 class FallbackToxicModel:
     """
     Simple fallback so the demo still runs even if model.pkl doesn't exist yet.
@@ -23,16 +96,16 @@ class FallbackToxicModel:
             is_toxic = 1 if any(word in lowered for word in self.toxic_words) else 0
             results.append(is_toxic)
         return results
-
 def load_model():
     if os.path.exists(MODEL_PATH):
-        try:
-            return joblib.load(MODEL_PATH)
-        except Exception as e:
+        # try:
+            return ToxicModel()
+        # except Exception as e:
             print(f"Could not load model.pkl, using fallback model instead: {e}")
     else:
         print("model.pkl not found, using fallback model.")
     return FallbackToxicModel()
+    
 
 model = load_model()
 
@@ -48,12 +121,12 @@ def predict():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    prediction = int(model.predict([text])[0])
+    prediction = " ".join(model.predict(text))
     return jsonify({
         "mode": "single",
         "inputText": text,
         "prediction": prediction,
-        "label": "Toxic" if prediction == 1 else "Not Toxic"
+        "label": str(prediction) if prediction else "Not Toxic"
     })
 
 @app.route("/analyze-comments", methods=["POST"])
@@ -74,7 +147,7 @@ def analyze_comments():
     toxic_count = 0
 
     for comment, pred in zip(cleaned_comments, predictions):
-        pred = int(pred)
+        pred = len(pred) > 0
         if pred == 1:
             toxic_count += 1
         results.append({
